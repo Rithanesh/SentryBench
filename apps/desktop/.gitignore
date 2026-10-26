@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build and packaging outputs
+dist/
+dist-electron/
+release/
+
+# Vite & TypeScript cache
+.vite/
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Coverage
+coverage/

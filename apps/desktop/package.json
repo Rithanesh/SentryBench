@@ -1,0 +1,91 @@
+{
+  "name": "sentrybench-desktop",
+  "private": true,
+  "version": "0.6.0",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build && electron-builder",
+    "electron:dev": "electron ."
+  },
+  "dependencies": {
+    "electron-updater": "^6.1.8",
+    "lucide-react": "^0.400.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.23.1",
+    "zustand": "^4.5.2"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.19",
+    "electron": "^30.0.0",
+    "electron-builder": "^24.13.3",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.3",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.10"
+  },
+  "build": {
+    "appId": "dev.sentrybench.desktop",
+    "productName": "SentryBench",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../../core/dist/${os}-${arch}",
+        "to": "core",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "../../VERSION",
+        "to": "core/VERSION"
+      },
+      {
+        "from": "../../CHANGELOG.md",
+        "to": "core/CHANGELOG.md"
+      }
+    ],
+    "publish": {
+      "provider": "github",
+      "owner": "your-org",
+      "repo": "sentrybench"
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": true,
+      "target": ["dmg", "zip"]
+    },
+    "win": {
+      "target": ["msi", "nsis"],
+      "signingHashAlgorithms": ["sha256"],
+      "certificateFile": "${env.WIN_CSC_LINK}",
+      "certificatePassword": "${env.WIN_CSC_KEY_PASSWORD}"
+    },
+    "msi": {
+      "oneClick": false,
+      "perMachine": false,
+      "upgradeCode": "2FC2BC82-AD77-474B-97E3-9CFCA6E960C5"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Development"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

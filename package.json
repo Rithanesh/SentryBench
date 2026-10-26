@@ -1,0 +1,16 @@
+{
+  "name": "sentrybench",
+  "private": true,
+  "version": "0.1.0",
+  "description": "SentryBench — authorized API security testing workbench (Electron + Go).",
+  "packageManager": "pnpm@9.0.0",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:core": "cd core && go run ./cmd/workbench",
+    "dev:desktop": "pnpm --filter sentrybench-desktop dev",
+    "build:desktop": "pnpm --filter sentrybench-desktop build",
+    "release": "bash scripts/bump-version.sh"
+  }
+}

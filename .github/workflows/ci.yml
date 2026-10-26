@@ -1,0 +1,48 @@
+# Runs on every push/PR — unlike release.yml (which only fires on version
+# tags), this exists purely to catch compile/type errors early. Nothing in
+# this repo has been built in the environment it was written in (no Go or
+# Node toolchain was available), so this is the first real compiler this
+# code sees — treat a red run here as "go fix it," not "probably fine."
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: go vet
+        working-directory: core
+        run: go vet ./...
+      - name: go build
+        working-directory: core
+        run: go build ./...
+      - name: go test
+        working-directory: core
+        run: go test ./...
+
+  desktop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      # No pnpm-lock.yaml is committed yet (never run in an environment
+      # with npm registry access) — switch this to --frozen-lockfile once
+      # one exists, so CI actually enforces reproducible installs.
+      - run: pnpm install
+      - name: Typecheck
+        working-directory: apps/desktop
+        run: pnpm exec tsc --noEmit

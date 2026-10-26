@@ -1,0 +1,139 @@
+# Builds the Go core service for each target platform, embeds it as an
+# Electron extraResource, then builds/signs/publishes the desktop app.
+# Triggered by pushing a tag matching the VERSION file (see
+# scripts/bump-version.sh — it's the only place VERSION changes, so tagging
+# off it keeps the release version, the changelog, and the GitHub release
+# in lockstep automatically).
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  build-core:
+    strategy:
+      matrix:
+        # `dir` MUST match electron-builder's own ${os}-${arch} macro output
+        # (mac/win/linux — NOT darwin/win32 — and x64/arm64), since
+        # apps/desktop/package.json's extraResources pulls from exactly
+        # that path. Get this wrong and the packaged app silently ships
+        # with no core binary.
+        include:
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            dir: mac-arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            dir: mac-x64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            dir: win-x64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            dir: linux-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Build sentrybench-core
+        working-directory: core
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "1" # modernc.org/sqlite is pure Go, but keep this explicit
+        run: |
+          mkdir -p ../core/dist/${{ matrix.dir }}
+          go build -o ../core/dist/${{ matrix.dir }}/sentrybench-core${{ matrix.goos == 'windows' && '.exe' || '' }} ./cmd/workbench
+      - name: Ensure binary is executable (mac/linux)
+        if: matrix.goos != 'windows'
+        run: chmod +x core/dist/${{ matrix.dir }}/sentrybench-core
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-${{ matrix.dir }}
+          path: core/dist/${{ matrix.dir }}
+
+  build-desktop:
+    needs: build-core
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: core-*
+          path: core/dist
+          # Each artifact (named "core-mac-arm64" etc.) lands in its own
+          # subfolder named after the artifact, e.g. core/dist/core-mac-arm64/.
+          # electron-builder's extraResources expects core/dist/mac-arm64/
+          # (no "core-" prefix) — the rename step below fixes that up, and
+          # re-sets the executable bit, which artifact upload/download can
+          # drop even when the original build step set it.
+          merge-multiple: false
+
+      - name: Normalize downloaded core binaries
+        shell: bash
+        run: |
+          cd core/dist
+          for d in core-*; do
+            target="${d#core-}"
+            mv "$d" "$target"
+            if [ -f "$target/sentrybench-core" ]; then
+              chmod +x "$target/sentrybench-core"
+            fi
+          done
+          ls -la .
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      # Keep apps/desktop/package.json's "version" in sync with the
+      # repo-root VERSION file at build time, so electron-updater and the
+      # installer both show the same number the Settings screen does.
+      - name: Sync package.json version from VERSION
+        shell: bash
+        run: |
+          VERSION="$(cat VERSION)"
+          node -e "
+            const fs = require('fs');
+            const p = 'apps/desktop/package.json';
+            const pkg = JSON.parse(fs.readFileSync(p));
+            pkg.version = '$VERSION';
+            fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+      # Switch to --frozen-lockfile once pnpm-lock.yaml is committed (see
+      # the same note in ci.yml) — there isn't one yet.
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build and publish
+        working-directory: apps/desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS signing + notarization
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Windows code signing
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: pnpm build -- --publish always

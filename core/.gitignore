@@ -1,0 +1,30 @@
+# Binaries and build outputs
+bin/
+dist/
+sentrybench-core
+sentrybench-core.exe
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+coverage.txt
+
+# Local runtime data & generated secrets
+.sentrybench/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+session.key
+ca-cert.pem
+ca-key.pem
+
+# Go workspace
+go.work
+go.work.sum
