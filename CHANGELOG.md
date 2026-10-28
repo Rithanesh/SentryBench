@@ -3,6 +3,12 @@
 All notable changes to SentryBench are documented here.
 Format loosely follows Keep a Changelog. Versions follow SemVer (MAJOR.MINOR.PATCH).
 
+## [0.6.1] - 2026-10-28
+### Changed
+- Added single-command dev workflow: 'pnpm dev' runs the Go core service and the Electron/Vite frontend together via concurrently
+- Rewrote README.md as a full GitHub-facing doc: features table, prerequisites, quick start, manual setup, scripts reference, project structure, design principles, collapsible feature deep-dives
+- Synced root package.json version with VERSION; it had drifted since early scaffolding
+
 ## [0.6.0] - 2026-10-25
 ### Changed
 - Embedded Browser (Browser screen): isolated per-tab login sessions for logging in as multiple accounts on the same site, each tab its own in-memory cookie jar + its own capture proxy on its own port

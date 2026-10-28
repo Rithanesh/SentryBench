@@ -1,226 +1,339 @@
 # SentryBench
 
-Cross-platform desktop workbench for **authorized** API security testing —
-traffic capture, Postman-style request replay, multi-identity authorization
-testing, a JWT inspector, and a decompression/encoding inspector.
+**SentryBench** is a cross-platform desktop workbench for **authorized** API
+security testing — traffic capture (including HTTPS interception), an
+embedded multi-account browser for pulling login tokens, Postman-style
+request replay, a multi-identity authorization-testing comparison view, a
+JWT inspector, a decompression/encoding inspector, and a passive
+vulnerability scan-and-report pipeline.
 
-> **Authorization required.** Only use SentryBench against systems you own or
-> have explicit written permission to test. The app enforces safe mode, a
-> target allowlist, and confirmation prompts for destructive requests, but
-> the legal and ethical responsibility is yours.
+It's an Electron desktop app (React + TypeScript) backed by a local Go HTTP
+service, with SQLite for storage. No cloud, no telemetry — everything runs
+on your machine.
 
-## Stack
+> ⚠️ **Authorization required.** Only point SentryBench at systems you own
+> or have explicit written permission to test. The app is built to be a
+> passive observer and require explicit confirmation for anything
+> sensitive (see [Design principles](#design-principles) below), but the
+> legal and ethical responsibility for how you use it is yours.
 
-- **Desktop UI:** Electron + React + TypeScript (Vite), Zustand for state, Tailwind CSS.
-- **Core service:** Go (`core/`) — HTTP API consumed by the Electron app over localhost.
-- **Storage:** SQLite (`modernc.org/sqlite`), with secrets destined for the OS keychain.
-- **Auth:** bcrypt password hashing + JWT sessions, local accounts (no cloud).
+---
 
-This repo currently implements **Milestones 0–5** of the full implementation plan
-(`docs/implementation-plan.md` if you add it):
+## Table of contents
 
-- **M0** — project scaffold, versioning, CI-ready layout.
-- **Login/profiles/workspaces** — accounts, bcrypt+JWT sessions, Postman-style workspaces.
-- **M1** — local proxy with full HTTP capture, plus HTTPS interception via a locally-generated
-  root CA (`core/internal/capture/ca.go`): the proxy terminates TLS with a per-host leaf cert
-  signed by that CA, decrypts and records the request/response, then re-encrypts on to the
-  real destination. Only decrypts traffic from clients that have both been pointed at the
-  proxy *and* explicitly trust `ca-cert.pem` (download button on the Traffic screen) — nothing
-  silent. Falls back to plain CONNECT passthrough (uninspected) if the "Intercept HTTPS"
-  toggle is off or a host is excluded. HAR 1.2 export/import (`core/internal/capture/har.go`)
-  round-trips captured traffic with browser devtools and other tooling.
-- **M2** — Postman-style replay workspace: saved requests, send, curl/PowerShell/Python/JS snippets.
-- **M3** — identity vault (bearer/apiKey/cookie/basic/custom), per-identity request sending, and
-  a multi-identity comparison view (Replay screen → "Compare across identities"): send the same
-  request as several identities at once and see status/size/timing side by side, with a
-  same-ish-response flag as a starting signal for IDOR/privilege-escalation review — it flags,
-  it doesn't claim to have confirmed anything.
-- **M4** — JWT Inspector: decode, claims/expiry, HMAC/RSA/ECDSA verification, weak-secret check.
-- **M5** — Decompression Inspector: base64/base64url/hex/url decode, gzip/deflate/zlib/brotli/zstd,
-  JSON pretty/minify, chained transforms, auto-detect.
+- [Features](#features)
+- [Tech stack](#tech-stack)
+- [Prerequisites](#prerequisites)
+- [Quick start (single command)](#quick-start-single-command)
+- [Manual setup](#manual-setup)
+  - [1. Backend (Go core service)](#1-backend-go-core-service)
+  - [2. Frontend (Electron + React desktop app)](#2-frontend-electron--react-desktop-app)
+- [Available scripts](#available-scripts)
+- [Project structure](#project-structure)
+- [Design principles](#design-principles)
+- [Feature deep dives](#feature-deep-dives)
+- [Versioning & changelog](#versioning--changelog)
+- [Packaging into .dmg / .msi](#packaging-into-dmg--msi)
+- [Project status](#project-status)
 
-- **M6** — scan check framework (`core/internal/scan`): passive, non-exploiting checks
-  (missing security headers, permissive CORS, verbose error disclosure, sensitive data
-  in URLs, weak cookie flags, JWT alg=none, server version disclosure) run over
-  captured traffic and/or saved requests, in the background (`go s.runScan(...)` — the
-  HTTP request that starts a scan returns immediately with `status: "running"`; the UI
-  polls until it completes rather than blocking on potentially many live requests).
-  Findings persist per-scan; `Findings.tsx` shows them with severity badges and lets
-  you re-run and compare scans.
-- **M7** — reporting/export (`core/internal/report`): JSON, CSV, and a self-contained
-  HTML report, downloadable from the Findings screen. SARIF/PDF are not yet implemented
-  — same `Data -> []byte` shape, just another `Generate*` function.
-- **M8** — packaging/signing/auto-update: `apps/desktop/package.json`'s `build` block
-  configures electron-builder for macOS (notarized, hardened runtime), Windows
-  (Authenticode-signed NSIS installer), and Linux (AppImage/deb).
-  `.github/workflows/release.yml` builds the Go core for each platform, embeds it as
-  an Electron extraResource, then builds/signs/publishes via electron-builder's GitHub
-  provider. `electron-updater` is wired into `electron/main.ts`: on launch it checks
-  the latest GitHub release, and `Settings.tsx` shows a "download / restart & install"
-  prompt when one's available — a different signal from the version/changelog panel
-  above it, which always reflects *this* build's own `VERSION`/`CHANGELOG.md`, not
-  whether a newer one exists.
+---
 
-Not yet built: SARIF/PDF report formats (same `Data -> []byte` shape as JSON/CSV/HTML,
-just not written yet), and a real job queue for scans (the background goroutine works
-fine for one scan at a time — concurrent scans on the same workspace would race on
-findings insertion order, not on correctness, but it's not something to lean on yet).
+## Features
 
-This repo has a CI workflow (`.github/workflows/ci.yml`) that `go build`/`go vet`s the
-core and typechecks the desktop app on every push — but as of this writing it has
-never actually been *run*: everything here was written without a Go or Node toolchain
-available to compile it. Treat the first CI run as the real first compile check, not
-this description.
+| Area | What it does |
+|---|---|
+| **Traffic capture** | Local proxy with full HTTP capture, plus HTTPS interception via a locally-generated root CA you explicitly install and trust |
+| **Embedded Browser** | Isolated per-tab login sessions — log in as multiple accounts on the same site, each in its own cookie jar, and auto-suggest tokens to save as Identities |
+| **Replay** | Postman-style saved requests: build, send, and export as curl / PowerShell / Python / JavaScript |
+| **Identity vault** | Store bearer tokens, API keys, cookies, and basic-auth credentials per workspace |
+| **Multi-identity comparison** | Send one request as several identities at once and compare status/size/timing — a starting signal for authorization bugs (IDOR, privilege escalation) |
+| **JWT Inspector** | Decode, inspect claims/expiry, verify HMAC/RSA/ECDSA signatures, run a weak-secret dictionary check |
+| **Decompression Inspector** | Chainable base64/base64url/hex/URL decode, gzip/deflate/zlib/brotli/zstd decompression, JSON pretty-print |
+| **Scans & findings** | Passive, non-exploiting checks (missing security headers, permissive CORS, verbose errors, sensitive data in URLs, weak cookie flags, JWT `alg=none`, version disclosure) over captured traffic or saved requests |
+| **Reporting** | Export findings as JSON, CSV, or a self-contained HTML report |
+| **HAR import/export** | Round-trip captured traffic with browser devtools and other tooling |
+| **Workspaces** | Postman-style workspaces per project, with local accounts (bcrypt + JWT sessions) |
+| **Auto-update & signed installers** | macOS (notarized `.dmg`), Windows (signed `.msi`), Linux (AppImage/deb), with `electron-updater` wired in |
 
-See `scripts/bump-version.sh`'s own output after a bump for the exact commands
-to cut a signed release (tag off `VERSION`, push, let the workflow do the rest).
+## Tech stack
 
-## Embedded Browser (multi-identity login capture)
+- **Desktop UI:** Electron, React, TypeScript, Vite, Tailwind CSS, Zustand, `lucide-react`
+- **Core service:** Go — a plain HTTP API the desktop app talks to on `localhost`
+- **Storage:** SQLite (`modernc.org/sqlite`, pure Go — no CGO toolchain needed)
+- **Auth:** bcrypt password hashing + JWT sessions, local accounts only
 
-The Browser screen (`apps/desktop/src/pages/Browser.tsx`) is for a specific workflow:
-log in as several different accounts on the same site, each in its own isolated tab,
-and turn each login into an Identity without copy-pasting tokens by hand.
+---
 
-- Each tab is an Electron `BrowserView` with its own **in-memory, non-persisted session
-  partition** — its own cookie jar, gone the moment the tab closes. Logging into a fresh
-  tab never inherits a previous tab's session.
-- Each tab is also routed through its **own capture proxy**, on its own ephemeral port
-  (`POST /workspaces/{id}/browser-tabs` in `core/internal/api/router.go`, backed by
-  `capture.Proxy` with a `TabID`). That's what makes "this token belongs to this tab"
-  precise instead of a host/timing guess.
-- **HTTPS interception in these tabs trusts the app's own local MITM CA automatically**
-  (`ses.setCertificateVerifyProc` in `electron/main.ts`'s `openBrowserTab`) — unlike the
-  regular Traffic screen, which requires the user to manually install and trust
-  `ca-cert.pem`. This is a deliberate, narrowly-scoped exception: it only affects that
-  one throwaway, in-memory tab partition; it never touches the OS trust store, the app's
-  own session, or any other tab; and the proxy's outbound connection to the real site is
-  still verified normally (Go's default TLS transport, real root CAs) — only the
-  proxy-to-this-tab leg, which is our own intentional MITM, skips the manual-trust step
-  that exists for the general-purpose capture proxy.
-- "Capture identity" (`GET /browser-tabs/{tabId}/suggested-identity`) scans that tab's
-  captured traffic for an `Authorization` header, API-key-shaped custom headers, and
-  session-looking cookies, and returns them as **candidates only** — nothing is saved as
-  an Identity until the user reviews and confirms each one in the modal.
+## Prerequisites
 
-## Packaging into .dmg / .msi
+Install these before you do anything else:
 
-Building the desktop app into an installer isn't just "run electron-builder" —
-the Go core service has to actually work once it's bundled, which means two
-things dev mode doesn't need to care about:
+| Tool | Version | Used for |
+|---|---|---|
+| [Go](https://go.dev/dl/) | 1.22+ | the core backend service |
+| [Node.js](https://nodejs.org/) | 20+ | the Electron/React frontend |
+| [pnpm](https://pnpm.io/installation) | 9+ | package manager for the frontend (`npm install -g pnpm`) |
 
-1. **Where `VERSION`/`CHANGELOG.md` live.** In dev, `go run ./cmd/workbench`
-   finds them by walking up from the repo checkout. A packaged app has no
-   checkout, so `package.json`'s `build.extraResources` copies both files
-   into the same `core/` resource folder as the binary, and
-   `electron/main.ts` passes that folder to the binary as
-   `SENTRYBENCH_RESOURCES_DIR`. Settings' version panel reads from there —
-   this is what makes "shows the right version after an update" keep working
-   post-packaging, not just in dev.
-2. **Where the SQLite DB lives.** A signed/notarized `.app` or installed
-   `.msi` directory is read-only. The core service can't write its database
-   or session key next to itself anymore, so `main.ts` passes
-   `app.getPath("userData")` as `SENTRYBENCH_DATA_DIR`, and the Go binary
-   writes there instead. (`core/internal/database`'s `Open()` doesn't change —
-   it just gets handed a different, writable path.)
+No database server, no Docker, no CGO compiler — SQLite is pure Go and the
+frontend build has no native dependencies.
 
-`electron/main.ts` also waits (up to 5s) for the core service's `/health` to
-respond before showing the window, and sets both env vars every time it
-spawns the binary — see `startCoreService()` and `waitForCore()`.
+---
 
-**Building:**
+## Quick start (single command)
+
+From the repo root, install everything once:
 
 ```bash
-pnpm install
-pnpm build:desktop        # builds core for the host OS/arch, then electron-builder
+pnpm install        # installs frontend deps AND the root dev-orchestration deps
+cd core && go mod tidy && cd ..   # fetches Go deps, generates go.sum
 ```
 
-- **macOS → `.dmg`**: `mac.target` includes `dmg`. Needs `CSC_LINK` (a
-  base64 `.p12`) + `CSC_KEY_PASSWORD`, and `APPLE_ID` /
-  `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` for notarization
-  (`mac.notarize: true`). Unsigned local builds work too — Gatekeeper will
-  just warn on first launch.
-- **Windows → `.msi`**: `win.target` is `["msi", "nsis"]`, so you get both an
-  MSI and an NSIS installer. The `msi.upgradeCode` in `package.json` is a
-  **placeholder GUID** — generate your own
-  (`[guid]::NewGuid()` in PowerShell) and keep it constant across every
-  release, or Windows will treat each version as an unrelated product
-  instead of an in-place upgrade. Needs `WIN_CSC_LINK` +
-  `WIN_CSC_KEY_PASSWORD` for Authenticode signing (optional for local/dev
-  builds, strongly recommended for anything you distribute — unsigned EXEs
-  / MSIs get a SmartScreen warning).
-- **Linux → AppImage/deb**: no signing required.
-
-`.github/workflows/release.yml` does this for all three platforms on every
-`vX.Y.Z` tag: builds `core` per OS/arch into `core/dist/<os>-<arch>/`
-(directory names **must** match electron-builder's own `${os}-${arch}`
-macro — `mac`/`win`/`linux`, not `darwin`/`win32` — that's what
-`extraResources` pulls from), uploads each as a build artifact, downloads
-and normalizes them on the desktop-build job, then runs electron-builder
-with `--publish always` to cut a GitHub release carrying the `.dmg`, `.msi`,
-`.exe`, `.AppImage`, and `.deb`.
-
-## Versioning & changelog (shows up in Settings)
-
-- `VERSION` at repo root is the single source of truth (SemVer).
-- `CHANGELOG.md` holds one entry per version, newest first.
-- The Go core service exposes `GET /version`, returning the current version **and**
-  the matching changelog entry, parsed straight from `CHANGELOG.md`.
-- The Settings screen in the desktop app calls `/version` and renders both — so after
-  any update, the user sees the new version number and exactly what changed, with
-  no manual UI edits required.
-- To cut a release: `./scripts/bump-version.sh patch "Fixed JWT expiry parsing"`
-  (or `minor` / `major`). This bumps `VERSION` and prepends a dated `CHANGELOG.md`
-  section in one step, so the two files never drift apart.
-
-## Getting started
+Then run **both** the backend and frontend together with one command:
 
 ```bash
-# Core service
-cd core
-go mod tidy
-go run ./cmd/workbench
-
-# Desktop app (separate terminal)
-cd apps/desktop
-pnpm install
 pnpm dev
 ```
 
-The Electron app's dev server calls the Go service's `/health` and `/version`
-endpoints on boot; the Dashboard shows both as a connectivity check.
+This uses [`concurrently`](https://www.npmjs.com/package/concurrently) to
+start the Go core service (`go run ./cmd/workbench`) and the Vite dev
+server + Electron app in parallel, in one terminal, with color-coded
+`[core]` / `[desktop]` log prefixes. Stopping it (`Ctrl+C`) stops both.
 
-## Repository layout
+That's it — the Electron window will open once Vite's dev server is ready,
+and the app will connect to the core service on `http://127.0.0.1:4317`.
+
+---
+
+## Manual setup
+
+If you'd rather run the backend and frontend in separate terminals (useful
+for watching their logs independently, or restarting one without the
+other), here's how.
+
+### 1. Backend (Go core service)
+
+```bash
+cd core
+go mod tidy          # first time only — fetches dependencies, writes go.sum
+go run ./cmd/workbench
+```
+
+You should see:
+
+```
+sentrybench-core: data dir ..., version dir ...
+sentrybench-core listening on http://127.0.0.1:4317
+```
+
+Leave this running. It serves the HTTP API the frontend talks to, and
+owns the SQLite database, the local MITM CA, and the capture proxy.
+
+**Verify it's up:**
+
+```bash
+curl http://127.0.0.1:4317/health
+# {"status":"ok"}
+```
+
+### 2. Frontend (Electron + React desktop app)
+
+In a second terminal, from the repo root:
+
+```bash
+pnpm install                     # installs all workspace packages, including apps/desktop
+pnpm dev:desktop
+```
+
+This starts Vite's dev server and launches the Electron window pointed at
+it, with hot reload for UI changes. The app expects the backend from step
+1 to already be running on port `4317`.
+
+---
+
+## Available scripts
+
+Run these from the **repo root** with `pnpm <script>`:
+
+| Script | What it does |
+|---|---|
+| `pnpm dev` | Runs backend + frontend together (see [Quick start](#quick-start-single-command)) |
+| `pnpm dev:core` | Runs only the Go core service (`go run ./cmd/workbench`) |
+| `pnpm dev:desktop` | Runs only the Electron/Vite frontend |
+| `pnpm build:desktop` | Builds the core binary for your OS/arch and packages the desktop app (`.dmg`/`.msi`/AppImage depending on platform) — see [Packaging](#packaging-into-dmg--msi) |
+| `pnpm release` | Runs `scripts/bump-version.sh` — bumps `VERSION` and prepends a `CHANGELOG.md` entry in one step |
+
+Go-specific commands (run from `core/`):
+
+| Command | What it does |
+|---|---|
+| `go run ./cmd/workbench` | Run the core service directly |
+| `go build ./...` | Compile-check everything without running it |
+| `go vet ./...` | Static analysis / lint |
+| `go test ./...` | Run tests |
+
+---
+
+## Project structure
 
 ```text
 sentrybench/
-├── VERSION
-├── CHANGELOG.md
-├── scripts/bump-version.sh
-├── core/                     # Go service
-│   ├── cmd/workbench/main.go
+├── package.json              # root scripts: dev, dev:core, dev:desktop, build:desktop, release
+├── VERSION                   # single source of truth for the app version (SemVer)
+├── CHANGELOG.md              # one entry per version, newest first
+├── scripts/
+│   ├── bump-version.sh       # bumps VERSION + CHANGELOG.md together
+│   └── generate-msi-guid.sh  # one-time: generate your own Windows MSI upgradeCode
+├── .github/workflows/
+│   ├── ci.yml                 # go build/vet + tsc typecheck on every push
+│   └── release.yml            # builds + signs + publishes installers on a version tag
+│
+├── core/                      # Go backend
+│   ├── cmd/workbench/main.go  # entrypoint
 │   └── internal/
-│       ├── version/          # reads VERSION + CHANGELOG.md
-│       ├── database/         # SQLite setup + migrations
-│       ├── auth/              # bcrypt + JWT sessions
-│       ├── models/           # User, Workspace, Identity, SavedRequest, CapturedRequest...
-│       ├── capture/          # local proxy (HTTP capture, HTTPS CONNECT passthrough)
-│       ├── replay/           # request execution + curl/PowerShell/Python/JS snippets
-│       ├── jwtutil/          # JWT decode/verify/weak-secret check
-│       ├── decompression/    # gzip/deflate/zlib/brotli/zstd/base64/hex/url + chains
-│       └── api/              # HTTP router wiring all of the above
-└── apps/desktop/             # Electron + React + TypeScript
-    ├── electron/main.ts
-    ├── electron/preload.ts
+│       ├── version/           # reads VERSION + CHANGELOG.md for GET /version
+│       ├── database/          # SQLite setup + migrations
+│       ├── auth/               # bcrypt + JWT sessions
+│       ├── models/            # User, Workspace, Identity, SavedRequest, CapturedRequest, Finding, Scan...
+│       ├── capture/            # proxy (HTTP capture, HTTPS MITM via local CA), HAR export/import, browser-tab proxies
+│       ├── replay/             # request execution + curl/PowerShell/Python/JS snippet generation
+│       ├── jwtutil/            # JWT decode/verify/weak-secret check
+│       ├── decompression/      # gzip/deflate/zlib/brotli/zstd/base64/hex/url + chains
+│       ├── scan/                # passive vulnerability checks
+│       ├── report/              # JSON/CSV/HTML report generation
+│       └── api/                 # HTTP router wiring all of the above
+│
+└── apps/desktop/              # Electron + React + TypeScript frontend
+    ├── electron/
+    │   ├── main.ts             # app lifecycle, spawns core service, BrowserView tab management, auto-update
+    │   └── preload.ts          # safe IPC bridge to the renderer
     └── src/
-        ├── lib/coreClient.ts      # typed fetch client for the Go API
-        ├── stores/authStore.ts
+        ├── lib/coreClient.ts   # typed fetch client for the Go API
+        ├── stores/authStore.ts # Zustand session/workspace state
+        ├── components/
+        │   ├── EmptyState.tsx
+        │   └── WorkspaceSwitcher.tsx
         └── pages/
             ├── Login.tsx
             ├── Workspaces.tsx
-            ├── Traffic.tsx        # proxy controls + captured request list
-            ├── Replay.tsx         # Postman-style request editor
-            ├── Identities.tsx     # identity vault
+            ├── Traffic.tsx              # proxy controls, CA cert download, captured request list
+            ├── Browser.tsx              # embedded multi-tab browser for multi-account login capture
+            ├── Replay.tsx               # Postman-style request editor + identity comparison
+            ├── Identities.tsx           # identity vault
+            ├── Findings.tsx             # scans + findings + report export
             ├── JwtInspector.tsx
             ├── DecompressionInspector.tsx
-            └── Settings.tsx
+            └── Settings.tsx             # version/changelog panel, account, auto-update prompt
 ```
+
+---
+
+## Design principles
+
+SentryBench is built around a few deliberate constraints, worth knowing
+before you dig into the code:
+
+- **Nothing auto-exploits.** The scan suite (`core/internal/scan`) is
+  entirely passive — it only reads headers/bodies that were already
+  captured or returned by a request *you* chose to send. It never sends
+  extra probe requests or fuzzes input.
+- **Nothing auto-trusts outside its own sandbox.** HTTPS interception
+  requires you to manually install and trust the generated CA certificate
+  for the general-purpose Traffic proxy. The one exception — the Embedded
+  Browser's per-tab sessions — auto-trusts that same CA, but *only* inside
+  an isolated, in-memory, throwaway session partition that's destroyed
+  when the tab closes; it never touches your OS trust store or any other
+  session. See [Feature deep dives](#feature-deep-dives).
+- **Nothing auto-saves credentials.** The Embedded Browser's "Capture
+  identity" flow only ever *suggests* candidate tokens/cookies for you to
+  review, edit, and explicitly confirm before anything is written to the
+  identity vault.
+
+---
+
+## Feature deep dives
+
+<details>
+<summary><strong>Embedded Browser (multi-identity login capture)</strong></summary>
+
+The Browser screen is for logging in as several different accounts on the
+same site, each in its own isolated tab, and turning each login into an
+Identity without copy-pasting tokens by hand.
+
+- Each tab is an Electron `BrowserView` with its own **in-memory,
+  non-persisted session partition** — its own cookie jar, gone the moment
+  the tab closes. A fresh tab never inherits a previous tab's session.
+- Each tab is also routed through its **own capture proxy** on its own
+  ephemeral port, so which token belongs to which login is exact, not a
+  host/timing guess.
+- HTTPS interception in these tabs auto-trusts the app's own local MITM CA
+  — scoped to that one throwaway partition only (see
+  [Design principles](#design-principles)).
+- "Capture identity" scans that tab's traffic for an `Authorization`
+  header, API-key-shaped headers, and session-looking cookies, and returns
+  them as **candidates only** — you review and confirm each one before it
+  becomes an Identity.
+
+</details>
+
+<details>
+<summary><strong>Versioning & changelog</strong></summary>
+
+- `VERSION` at the repo root is the single source of truth (SemVer).
+- `CHANGELOG.md` holds one entry per version, newest first.
+- The core service exposes `GET /version`, returning the current version
+  **and** the matching changelog entry, parsed straight from
+  `CHANGELOG.md`.
+- The Settings screen calls `/version` and renders both — so after any
+  update, you see the new version number and exactly what changed, with no
+  manual UI edits required.
+- To cut a release: `pnpm release patch "Fixed JWT expiry parsing"` (or
+  `minor` / `major`). This bumps `VERSION` and prepends a dated
+  `CHANGELOG.md` section in one step, so the two files never drift apart.
+
+</details>
+
+---
+
+## Packaging into .dmg / .msi
+
+```bash
+pnpm install
+pnpm build:desktop        # builds the core binary for the host OS/arch, then runs electron-builder
+```
+
+- **macOS → `.dmg`**: needs `CSC_LINK` (base64 `.p12`) + `CSC_KEY_PASSWORD`,
+  and `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` for
+  notarization. Unsigned local builds work too — Gatekeeper just warns on
+  first launch.
+- **Windows → `.msi`**: run `scripts/generate-msi-guid.sh` **once**, right
+  after forking this repo, and set the result as `build.msi.upgradeCode`
+  in `apps/desktop/package.json` — then never change it again, or Windows
+  will treat each release as an unrelated product instead of an in-place
+  upgrade. Needs `WIN_CSC_LINK` + `WIN_CSC_KEY_PASSWORD` for Authenticode
+  signing (optional locally, recommended for distribution).
+- **Linux → AppImage/deb**: no signing required.
+
+`.github/workflows/release.yml` does all three platforms automatically on
+every `vX.Y.Z` tag — see the workflow file for the full pipeline (it also
+embeds the Go core binary and `VERSION`/`CHANGELOG.md` as Electron
+`extraResources` so the packaged app works the same as it does in dev).
+
+---
+
+## Project status
+
+This repo was built incrementally and has a CI workflow
+(`.github/workflows/ci.yml`) that runs `go build`/`go vet` on the core and
+typechecks the frontend on every push — run that (or `go build ./...` /
+`pnpm exec tsc --noEmit` locally) before relying on any given commit.
+`CHANGELOG.md` has the full feature-by-feature history.
+
+**Not yet implemented:** SARIF/PDF report formats, a real background job
+queue for concurrent scans (the current one works fine for a single scan
+at a time per workspace).
+
+---
+
+## License
+
+Add your license of choice here before publishing.
